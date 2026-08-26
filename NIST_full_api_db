@@ -1,0 +1,79 @@
+import os
+import time
+import json
+import requests
+import urllib3
+
+# НАСТРОЙКИ
+API_KEY = "0bdbbd2b-9cca-47a9-b128-5677709f01de"  # Ваш ключ
+BASE_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+OUTPUT_DIR = "nvd_database"
+RESULTS_PER_PAGE = 2000  # Максимально разрешенное количество CVE за один запрос
+DELAY = 0.6  # Пауза между запросами (безопасно для лимитов с API-ключом)
+# Отключаем предупреждения об небезопасном соединении в консоли
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+# Создаем папку для сохранения данных
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+headers = {
+    "apiKey": API_KEY,
+    "User-Agent": "NVD-Downloader-Python-Script"
+}
+
+start_index = 0
+total_results = 1  # Динамически обновится при первом запросе
+page = 1
+
+print("=== Запуск скачивания базы NVD ===")
+
+while start_index < total_results:
+    params = {
+        "resultsPerPage": RESULTS_PER_PAGE,
+        "startIndex": start_index
+    }
+
+    print(f"Скачивание страницы {page} (записи с {start_index} из {total_results if total_results > 1 else '?'})...")
+
+    try:
+        #response = requests.get(BASE_URL, headers=headers, params=params, timeout=30)
+        response = requests.get(BASE_URL, headers=headers, params=params, timeout=30, verify=False)
+
+        # Обработка лимитов (на случай, если сервер NIST перегружен)
+        if response.status_code == 403:
+            print("Превышен лимит запросов (403). Ожидание 10 секунд...")
+            time.sleep(10)
+            continue
+        elif response.status_code != 200:
+            print(f"Ошибка сервера ({response.status_code}). Повтор через 5 секунд...")
+            time.sleep(5)
+            continue
+
+        data = response.json()
+
+        # Обновляем общее количество CVE в базе при первом запросе
+        if start_index == 0:
+            total_results = data.get("totalResults", 0)
+            print(f"Всего в базе найдено записей: {total_results}")
+
+        # Сохраняем текущую порцию данных в отдельный файл
+        vulnerabilities = data.get("vulnerabilities", [])
+        if vulnerabilities:
+            filename = os.path.join(OUTPUT_DIR, f"nvd_page_{page}.json")
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(vulnerabilities, f, ensure_ascii=False, indent=2)
+            print(f"Сохранено {len(vulnerabilities)} CVE в файл {filename}")
+
+        # Переходим к следующей странице
+        start_index += RESULTS_PER_PAGE
+        page += 1
+
+        # Обязательная пауза, чтобы не забанили
+        time.sleep(DELAY)
+
+    except Exception as e:
+        print(f"Произошла непредвиденная ошибка: {e}. Повтор через 5 секунд...")
+        time.sleep(5)
+
+print("\n=== Скачивание успешно завершено! ===")
+print(f"Все файлы сохранены в папку: {OUTPUT_DIR}")
