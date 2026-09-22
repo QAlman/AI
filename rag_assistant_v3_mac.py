@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-RAG-ассистент без Ollama.
+RAG-ассистент без Ollama, с локальными моделями.
 Стек:
   - LLM: gemma-3-4b-it (GGUF, Q4_K_M) через llama-cpp-python + Metal (M1)
   - Embeddings: intfloat/multilingual-e5-large через sentence-transformers
@@ -21,38 +21,44 @@ from sentence_transformers import SentenceTransformer
 # ПУТИ И НАСТРОЙКИ
 # ============================================================
 BASE_DIR        = os.path.dirname(os.path.abspath(__file__))
+
+# --- Локальные пути к моделям ---
+MODELS_DIR      = os.path.join(BASE_DIR, "models")
+LLM_PATH        = os.path.join(MODELS_DIR, "gemma-3-4b-it_Q4_K_M.gguf")
+EMBED_PATH      = os.path.join(MODELS_DIR, "multilingual-e5-large")
+
+# --- Прочие пути ---
 INDEX_PATH      = os.path.join(BASE_DIR, "cis_faiss.index")
 METADATA_PATH   = os.path.join(BASE_DIR, "cis_metadata.pkl")
 PROMPT_FILE     = os.path.join(BASE_DIR, "prompt.txt")
 OUTPUT_DIR      = os.path.join(BASE_DIR, "output")
 
-# Модели
-LLM_REPO_ID     = "daniloreddy/gemma-3-4b-it_GGUF"
-LLM_FILENAME    = "gemma-3-4b-it_Q4_K_M.gguf"
-EMBED_MODEL_ID  = "intfloat/multilingual-e5-large"
-
-# Параметры RAG
+# --- Параметры RAG ---
 K_RESULTS       = 10
 MAX_NEW_TOKENS  = 2048
 TEMPERATURE     = 0.7
 N_CTX           = 4096
-N_GPU_LAYERS    = -1   # M1: всё на Metal. Если ошибка памяти — поставь 20
+N_GPU_LAYERS    = -1
 
 
 # ============================================================
-# 1. ЗАГРУЗКА МОДЕЛЕЙ (один раз при старте)
+# 1. ЗАГРУЗКА МОДЕЛЕЙ ИЗ ЛОКАЛЬНЫХ ФАЙЛОВ
 # ============================================================
-print("🔧 Загружаю LLM (gemma-3-4b-it Q4_K_M)...")
-llm = Llama.from_pretrained(
-    repo_id=LLM_REPO_ID,
-    filename=LLM_FILENAME,
+if not os.path.exists(LLM_PATH):
+    raise FileNotFoundError(f"Не найден GGUF-файл: {LLM_PATH}")
+if not os.path.isdir(EMBED_PATH):
+    raise FileNotFoundError(f"Не найдена папка эмбеддера: {EMBED_PATH}")
+
+print(f"🔧 Загружаю LLM из {LLM_PATH} ...")
+llm = Llama(
+    model_path=LLM_PATH,
     n_ctx=N_CTX,
     n_gpu_layers=N_GPU_LAYERS,
     verbose=False,
 )
 
-print("🔧 Загружаю эмбеддер (multilingual-e5-large)...")
-embedder = SentenceTransformer(EMBED_MODEL_ID)
+print(f"🔧 Загружаю эмбеддер из {EMBED_PATH} ...")
+embedder = SentenceTransformer(EMBED_PATH)
 
 
 # ============================================================
@@ -68,10 +74,6 @@ with open(METADATA_PATH, "rb") as f:
 # 3. ЧТЕНИЕ И ПОДГОТОВКА ПРОМПТА ИЗ ФАЙЛА
 # ============================================================
 def read_and_prepare_prompt(file_path: str, default_text: str = "") -> str:
-    """
-    Читает prompt.txt, нормализует переводы строк, убирает пустые строки
-    и лишние пробелы. Возвращает один связный абзац.
-    """
     if not os.path.exists(file_path):
         print(f"⚠️  Файл промпта не найден: {file_path}. Использую значение по умолчанию.")
         return default_text
@@ -101,7 +103,6 @@ print(f"\n❓ Вопрос пользователя: {user_query}\n")
 # ============================================================
 print("🔍 Ищу совпадения в базе знаний...")
 
-# E5 рекомендует префикс "query: " для запросов
 query_vec = embedder.encode(
     [f"query: {user_query}"],
     normalize_embeddings=True,
@@ -187,3 +188,56 @@ with open(output_filename, "w", encoding="utf-8") as f:
     f.write(f"Использованные источники: {', '.join(sorted(sources))}\n")
 
 print(f"\n💾 Документ сохранён: {output_filename}")
+
+---------------------------------------
+# Важно: Metal-ускорение для M1
+CMAKE_ARGS="-DLLAMA_METAL=on" pip install llama-cpp-python
+
+pip install sentence-transformers faiss-cpu numpy
+
+cd rag_project/models
+curl -L -o gemma-3-4b-it_Q4_K_M.gguf \
+  "https://huggingface.co/daniloreddy/gemma-3-4b-it_GGUF/resolve/main/gemma-3-4b-it_Q4_K_M.gguf"
+
+
+
+
+----------------
+
+.2. Эмбеддер intfloat/multilingual-e5-large (~2.2 ГБ)
+На странице модели: https://huggingface.co/intfloat/multilingual-e5-large → вкладка Files and versions → скачать все файлы (кроме .gitattributes и README.md, они не нужны):
+
+text
+config.json
+model.safetensors       ← основной файл ~2.2 ГБ
+tokenizer.json
+tokenizer_config.json
+special_tokens_map.json
+sentence_bert_config.json
+modules.json
+Можно через huggingface-cli, чтобы не кликать по одному:
+
+bash
+pip install huggingface_hub
+huggingface-cli download intfloat/multilingual-e5-large \
+  --local-dir rag_project/models/multilingual-e5-large \
+  --local-dir-use-symlinks False
+Положи все файлы в rag_project/models/multilingual-e5-large/.
+
+-------------------------------------
+Мелочи, которые стоит помнить
+Про папку models/ — можно вынести за пределы проекта (например, ~/models/), чтобы не дублировать 5 ГБ файлов в каждом проекте. Тогда просто замени:
+
+python
+MODELS_DIR = os.path.expanduser("~/models")
+Про пересборку FAISS — rebuild_index.py тоже нужно поправить: там SentenceTransformer("intfloat/multilingual-e5-large") заменить на SentenceTransformer(EMBED_PATH) с тем же локальным путём.
+
+Про офлайн-режим — если хочешь гарантировать, что скрипт вообще не полезет в сеть, добавь в самый верх до импортов:
+
+python
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+Но это надо ставить до import sentence_transformers, иначе не сработает. Проверено — работает и не мешает загрузке из локальных папок.
+
+Про переносимость на Windows/Linux — BASE_DIR = os.path.dirname(os.path.abspath(__file__)) решает проблему путей автоматически. Просто переносишь папку rag_project целиком (вместе с models/), и всё работает.
+
