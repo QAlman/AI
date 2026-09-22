@@ -66,3 +66,6 @@ print("5. Сохранение результата...")
 output_path = "animated_sdxl_face.gif"
 export_to_gif(output.frames, output_path, fps=8)
 print(f"Успешно! Анимация сохранена в файл: {output_path}")
+
+#https://huggingface.co/RunDiffusion/Juggernaut-XL-v9/tree/main
+#https://civitai.com/models/133005/juggernaut-xl
